@@ -13,6 +13,7 @@ const actions = [
   { label: "Pay me", icon: QrCode, href: null },
 ];
 
+
 const TYPE_LABEL = { FUNDING: "Wallet funding", TRANSFER: "Transfer", CARD_FUND: "Card top-up", CARD_SPEND: "Card payment" } as const;
 
 function greeting() {

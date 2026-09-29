@@ -47,3 +47,4 @@ next-env.d.ts
 /.dev-mail
 /test-results
 /playwright-report
+/e2e
