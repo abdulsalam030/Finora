@@ -1,0 +1,203 @@
+// Fintech Wallet — data model.
+// Money is always stored as integer minor units (kobo/cents) alongside a currency code.
+// Balances are derived from immutable LedgerEntry rows; Wallet.cachedBalance is a
+// denormalised copy updated in the same DB transaction as the entries.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Currency {
+  NGN
+  USD
+}
+
+enum TransactionType {
+  FUNDING
+  TRANSFER
+  CARD_FUND
+  CARD_SPEND
+}
+
+enum TransactionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+enum PaymentProvider {
+  PAYSTACK
+  FLUTTERWAVE
+  INTERNAL
+}
+
+enum EntryDirection {
+  DEBIT
+  CREDIT
+}
+
+// Accounts owned by the platform rather than a user.
+enum SystemAccount {
+  GATEWAY_CLEARING
+  CARD_ISSUING
+  FEES
+}
+
+enum CardStatus {
+  ACTIVE
+  FROZEN
+}
+
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  username          String    @unique
+  name              String
+  passwordHash      String
+  pinHash           String?
+  // Lock the PIN after repeated wrong guesses.
+  pinFailedAttempts Int       @default(0)
+  pinLockedUntil    DateTime?
+  emailVerified     DateTime?
+  createdAt         DateTime  @default(now())
+
+  sessions      Session[]
+  wallets       Wallet[]
+  cards         VirtualCard[]
+  notifications Notification[]
+  otps          OtpCode[]
+}
+
+// Opaque session token lives in an httpOnly cookie; only its SHA-256 hash is stored.
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  userAgent String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model OtpCode {
+  id        String    @id @default(cuid())
+  userId    String
+  codeHash  String
+  attempts  Int       @default(0)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Wallet {
+  id            String   @id @default(cuid())
+  userId        String
+  currency      Currency
+  cachedBalance BigInt   @default(0)
+  createdAt     DateTime @default(now())
+
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entries LedgerEntry[]
+
+  @@unique([userId, currency])
+}
+
+model Transaction {
+  id          String            @id @default(cuid())
+  // Unique business reference — the idempotency key for webhooks and client retries.
+  reference   String            @unique
+  type        TransactionType
+  status      TransactionStatus @default(PENDING)
+  provider    PaymentProvider
+  amount      BigInt
+  currency    Currency
+  description String?
+  // Who initiated it (for listing); counterparty info lives in meta.
+  userId      String
+  meta        Json?
+  createdAt   DateTime          @default(now())
+  completedAt DateTime?
+
+  entries LedgerEntry[]
+
+  @@index([userId, createdAt])
+}
+
+// Immutable. Every posted transaction has entries whose DEBIT and CREDIT totals are equal.
+// Exactly one of walletId / systemAccount / cardId is set.
+model LedgerEntry {
+  id            String         @id @default(cuid())
+  transactionId String
+  walletId      String?
+  cardId        String?
+  systemAccount SystemAccount?
+  direction     EntryDirection
+  amount        BigInt
+  currency      Currency
+  createdAt     DateTime       @default(now())
+
+  transaction Transaction  @relation(fields: [transactionId], references: [id])
+  wallet      Wallet?      @relation(fields: [walletId], references: [id])
+  card        VirtualCard? @relation(fields: [cardId], references: [id])
+
+  @@index([walletId])
+  @@index([cardId])
+}
+
+model VirtualCard {
+  id            String     @id @default(cuid())
+  userId        String
+  label         String
+  brand         String
+  last4         String
+  // AES-256-GCM encrypted full PAN + CVV; only decrypted on PIN-gated reveal.
+  encryptedData String
+  expiryMonth   Int
+  expiryYear    Int
+  currency      Currency
+  status        CardStatus @default(ACTIVE)
+  spendLimit    BigInt?
+  cachedBalance BigInt     @default(0)
+  createdAt     DateTime   @default(now())
+
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entries LedgerEntry[]
+
+  @@index([userId])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  title     String
+  body      String
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+// Raw webhook log — dedupes provider retries and gives an audit trail.
+model WebhookEvent {
+  id         String          @id @default(cuid())
+  provider   PaymentProvider
+  eventId    String
+  payload    Json
+  receivedAt DateTime        @default(now())
+
+  @@unique([provider, eventId])
+}
